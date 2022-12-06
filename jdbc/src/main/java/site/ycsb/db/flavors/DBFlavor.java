@@ -53,6 +53,16 @@ public abstract class DBFlavor {
   public abstract String createReadStatement(StatementType readType, String key);
 
   /**
+   * Create and return a SQL statement for prepare stmt.
+   */
+  public abstract String createPrepareStatement(String tableName, String key);
+
+  /**
+   * Create and return a SQL statement for execute stmt.
+   */
+  public abstract String createExecuteStatement();
+
+  /**
    * Create and return a SQL statement for deleting data.
    */
   public abstract String createDeleteStatement(StatementType deleteType, String key);
