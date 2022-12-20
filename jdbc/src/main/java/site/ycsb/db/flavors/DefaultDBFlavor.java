@@ -44,25 +44,6 @@ public class DefaultDBFlavor extends DBFlavor {
   }
 
   @Override
-  public String createPrepareStatement(String tableName, String key) {
-    StringBuilder read = new StringBuilder("PREPARE YCSB_STMT FROM SELECT * FROM ");
-    read.append(tableName);
-    read.append(" WHERE ");
-    read.append(JdbcDBClient.PRIMARY_KEY);
-    read.append(" = ");
-    read.append("?");
-    return read.toString();
-  }
-
-  @Override
-  public String createExecuteStatement() {
-    StringBuilder read = new StringBuilder("EXECUTE YCSB_STMT USING (?)");
-    System.out.println(read.toString());
-    return read.toString();
-  }
-
-
-  @Override
   public String createReadStatement(StatementType readType, String key) {
     StringBuilder read = new StringBuilder("SELECT * FROM ");
     read.append(readType.getTableName());

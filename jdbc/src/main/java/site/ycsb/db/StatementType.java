@@ -22,7 +22,7 @@ package site.ycsb.db;
 public class StatementType {
 
   enum Type {
-    INSERT(1), DELETE(2), READ(3), UPDATE(4), SCAN(5), PREPARE(6), EXECUTE(7);
+    INSERT(1), DELETE(2), READ(3), UPDATE(4), SCAN(5);
 
     private final int internalType;
 

@@ -22,27 +22,10 @@ import site.ycsb.ByteIterator;
 import site.ycsb.Status;
 import site.ycsb.StringByteIterator;
 
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
-
-import org.apache.commons.codec.binary.Base64;
-import org.apache.http.HttpHeaders;
-import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.client.methods.HttpPut;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.DefaultRedirectStrategy;
-import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.util.EntityUtils;
-
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-
 import site.ycsb.db.flavors.DBFlavor;
 
 /**
@@ -72,9 +55,6 @@ public class JdbcDBClient extends DB {
 
   /** The password to use for establishing the connection. */
   public static final String CONNECTION_PASSWD = "db.passwd";
-
-  /** The password to use for establishing the connection. */
-  public static final String DORIS_LOAD_URL = "doris.load_url";
 
   /** The batch size for batched inserts. Set to >0 to use batching */
   public static final String DB_BATCH_SIZE = "db.batchsize";
@@ -107,11 +87,7 @@ public class JdbcDBClient extends DB {
   /** SQL Server before 2012: TOP n after the SELECT. */
   private boolean sqlserverScans = false;
 
-  private boolean readPrepared = false;
-  private long curBatchSize = 0;
-
   private List<Connection> conns;
-  private List<Boolean> connsPrepared;
   private boolean initialized = false;
   private Properties props;
   private int jdbcFetchSize;
@@ -121,10 +97,6 @@ public class JdbcDBClient extends DB {
   private static final String DEFAULT_PROP = "";
   private ConcurrentMap<StatementType, PreparedStatement> cachedStatements;
   private long numRowsInBatch = 0;
-  private String user;
-  private String passwd;
-  private String loadURL;
-  private StringBuilder bufferString = new StringBuilder();
   /** DB flavor defines DB-specific syntax and behavior for the
    * particular database. Current database flavors are: {default, phoenix} */
   private DBFlavor dbFlavor;
@@ -212,10 +184,9 @@ public class JdbcDBClient extends DB {
     }
     props = getProperties();
     String urls = props.getProperty(CONNECTION_URL, DEFAULT_PROP);
+    String user = props.getProperty(CONNECTION_USER, DEFAULT_PROP);
+    String passwd = props.getProperty(CONNECTION_PASSWD, DEFAULT_PROP);
     String driver = props.getProperty(DRIVER_CLASS);
-    user = props.getProperty(CONNECTION_USER, DEFAULT_PROP);
-    passwd = props.getProperty(CONNECTION_PASSWD, DEFAULT_PROP);
-    loadURL = props.getProperty(DORIS_LOAD_URL, "");
 
     this.jdbcFetchSize = getIntProperty(props, JDBC_FETCH_SIZE);
     this.batchSize = getIntProperty(props, DB_BATCH_SIZE);
@@ -246,7 +217,6 @@ public class JdbcDBClient extends DB {
       }
       int shardCount = 0;
       conns = new ArrayList<Connection>(3);
-      connsPrepared = new ArrayList<>();
       // for a longer explanation see the README.md
       // semicolons aren't present in JDBC urls, so we use them to delimit
       // multiple JDBC connections to shard across.
@@ -263,7 +233,6 @@ public class JdbcDBClient extends DB {
 
         shardCount++;
         conns.add(conn);
-        connsPrepared.add(false);
       }
 
       System.out.println("Using shards: " + shardCount + ", batchSize:" + batchSize + ", fetchSize: " + jdbcFetchSize);
@@ -331,17 +300,6 @@ public class JdbcDBClient extends DB {
     return stmt;
   }
 
-  private PreparedStatement createAndCacheExecuteStatement(StatementType readType, String key)
-      throws SQLException {
-    String read = dbFlavor.createExecuteStatement();
-    PreparedStatement readStatement = getShardConnectionByKey(key).prepareStatement(read);
-    PreparedStatement stmt = cachedStatements.putIfAbsent(readType, readStatement);
-    if (stmt == null) {
-      return readStatement;
-    }
-    return stmt;
-  }
-
   private PreparedStatement createAndCacheDeleteStatement(StatementType deleteType, String key)
       throws SQLException {
     String delete = dbFlavor.createDeleteStatement(deleteType, key);
@@ -381,23 +339,19 @@ public class JdbcDBClient extends DB {
   @Override
   public Status read(String tableName, String key, Set<String> fields, Map<String, ByteIterator> result) {
     try {
-      StatementType type = new StatementType(StatementType.Type.PREPARE, tableName, 1, "", getShardIndexByKey(key));
-      if (!connsPrepared.get(getShardIndexByKey(key))) {
-        Statement prepStatement = getShardConnectionByKey(key).createStatement();
-        prepStatement.execute(dbFlavor.createPrepareStatement(tableName, key));
-        connsPrepared.set(getShardIndexByKey(key), true);
-      }
-      type = new StatementType(StatementType.Type.EXECUTE, tableName, 1, "", getShardIndexByKey(key));
+      StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
       PreparedStatement readStatement = cachedStatements.get(type);
       if (readStatement == null) {
-        readStatement = createAndCacheExecuteStatement(type, key);
+        readStatement = createAndCacheReadStatement(type, key);
       }
-      readStatement.setString(1, key);
+      readStatement.setString(1,  "user6582169630197739217");
       ResultSet resultSet = readStatement.executeQuery();
       if (!resultSet.next()) {
+        System.out.println(key + " not found");
         resultSet.close();
         return Status.NOT_FOUND;
       }
+      System.out.println("result " + resultSet.getString("FIELD0"));
       if (result != null && fields != null) {
         for (String field : fields) {
           String value = resultSet.getString(field);
@@ -407,6 +361,7 @@ public class JdbcDBClient extends DB {
       resultSet.close();
       return Status.OK;
     } catch (SQLException e) {
+      e.printStackTrace();
       System.err.println("Error in processing read of table " + tableName + ": " + e);
       return Status.ERROR;
     }
@@ -478,86 +433,70 @@ public class JdbcDBClient extends DB {
 
   @Override
   public Status insert(String tableName, String key, Map<String, ByteIterator> values) {
-    int numFields = values.size();
-    Map<String, String> map = new HashMap<>(); 
-    map.put(PRIMARY_KEY, key);
-    for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
-      map.put(entry.getKey().toUpperCase(), entry.getValue().toString());
-    }
-    // Create an ObjectMapper
-    ObjectMapper mapper = new ObjectMapper();
-    String json = null;
     try {
-      // Convert the map to a JSON string
-      json = mapper.writeValueAsString(map);
-    } catch (JsonProcessingException e) {
-      e.printStackTrace();
-    }
-    return dorisStreamLoad(json);
-  }
-
-  private String basicAuthHeader(String username, String password) {
-    final String tobeEncode = username + ":" + password;
-    byte[] encoded = Base64.encodeBase64(tobeEncode.getBytes(StandardCharsets.UTF_8));
-    return "Basic " + new String(encoded);
-  }
-
-  public Status dorisStreamLoad(String valueJson) {
-    String buff;
-    synchronized (this) {
-      curBatchSize += 1;
-      if (curBatchSize <= batchSize) {
-        bufferString.append(valueJson);
-        bufferString.append("\n");
-        return Status.OK;
+      int numFields = values.size();
+      OrderedFieldInfo fieldInfo = getFieldInfo(values);
+      StatementType type = new StatementType(StatementType.Type.INSERT, tableName,
+          numFields, fieldInfo.getFieldKeys(), getShardIndexByKey(key));
+      PreparedStatement insertStatement = cachedStatements.get(type);
+      if (insertStatement == null) {
+        insertStatement = createAndCacheInsertStatement(type, key);
+      }
+      insertStatement.setString(1, key);
+      int index = 2;
+      for (String value: fieldInfo.getFieldValues()) {
+        insertStatement.setString(index++, value);
+      }
+      // Using the batch insert API
+      if (batchUpdates) {
+        insertStatement.addBatch();
+        // Check for a sane batch size
+        if (batchSize > 0) {
+          // Commit the batch after it grows beyond the configured size
+          if (++numRowsInBatch % batchSize == 0) {
+            int[] results = insertStatement.executeBatch();
+            for (int r : results) {
+              // Acceptable values are 1 and SUCCESS_NO_INFO (-2) from reWriteBatchedInserts=true
+              if (r != 1 && r != -2) { 
+                return Status.ERROR;
+              }
+            }
+            // If autoCommit is off, make sure we commit the batch
+            if (!autoCommit) {
+              getShardConnectionByKey(key).commit();
+            }
+            return Status.OK;
+          } // else, the default value of -1 or a nonsense. Treat it as an infinitely large batch.
+        } // else, we let the batch accumulate
+        // Added element to the batch, potentially committing the batch too.
+        return Status.BATCHED_OK;
       } else {
-        buff = bufferString.toString();
-        curBatchSize = 0;
-        bufferString = new StringBuilder();
-      }
-    }
-    HttpClientBuilder httpClientBuilder = HttpClients
-            .custom()
-            .setRedirectStrategy(new DefaultRedirectStrategy() {
-                @Override
-                protected boolean isRedirectable(String method) {
-                    // If the connection target is FE, you need to handle 307 redirect.
-                    return true;
-                }
-            });
-
-    try (CloseableHttpClient client = httpClientBuilder.build()) {
-      HttpPut put = new HttpPut(loadURL);
-      // put.setHeader(HttpHeaders.EXPECT, "100-continue");
-      // put.setHeader(HttpHeaders.AUTHORIZATION, basicAuthHeader(user, passwd));
-      put.setHeader("read_json_by_line", "true");
-      put.setHeader("format", "json");
-      put.setHeader(HttpHeaders.AUTHORIZATION, basicAuthHeader(user, passwd));
-      StringEntity buffEntity = new StringEntity(buff);
-      // StringEntity can also be used here to transfer arbitrary data.
-      put.setEntity(buffEntity);
-      try (CloseableHttpResponse response = client.execute(put)) {
-        String loadResult = "";
-        if (response.getEntity() != null) {
-          loadResult = EntityUtils.toString(response.getEntity());
+        // Normal update
+        int result = insertStatement.executeUpdate();
+        // If we are not autoCommit, we might have to commit now
+        if (!autoCommit) {
+          // Let updates be batcher locally
+          if (batchSize > 0) {
+            if (++numRowsInBatch % batchSize == 0) {
+              // Send the batch of updates
+              getShardConnectionByKey(key).commit();
+            }
+            // uhh
+            return Status.OK;
+          } else {
+            // Commit each update
+            getShardConnectionByKey(key).commit();
+          }
         }
-
-        final int statusCode = response.getStatusLine().getStatusCode();
-        if (statusCode != 200) {
-          throw new IOException(
-                    String.format("Stream load failed. status: %s load result: %s", statusCode, loadResult));
+        if (result == 1) {
+          return Status.OK;
         }
-
-        System.out.println("Get load result: " + loadResult);
-      } catch (IOException e) {
-        e.printStackTrace();
-        return Status.ERROR;
       }
-    } catch (IOException e) {
-      e.printStackTrace();
+      return Status.UNEXPECTED_STATE;
+    } catch (SQLException e) {
+      System.err.println("Error in processing insert to table: " + tableName + e);
       return Status.ERROR;
     }
-    return Status.OK;
   }
 
   @Override
