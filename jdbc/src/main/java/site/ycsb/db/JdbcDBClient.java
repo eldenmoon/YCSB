@@ -97,7 +97,10 @@ public class JdbcDBClient extends DB {
   public static final String NULL_VALUE = "NULL";
 
   /** The primary key in the user table. */
-  public static final String PRIMARY_KEY = "YCSB_KEY";
+  public static String PRIMARY_KEY = "YCSB_KEY";
+  private Map<String, String> columnValue = new HashMap<String, String>();
+  public static int KEY_LEN = 100;
+  public static String USER_TABLE = "";
 
   /** The field name prefix in the table. */
   public static final String COLUMN_PREFIX = "FIELD";
@@ -204,12 +207,36 @@ public class JdbcDBClient extends DB {
     return defaultVal;
   }
 
+  public void customInit() {
+    PRIMARY_KEY = "c_customer_id";
+    KEY_LEN = 16;
+    USER_TABLE = "customer";
+    columnValue.put("c_customer_sk", "12345");
+    columnValue.put("c_current_cdemo_sk", "12345");
+    columnValue.put("c_current_hdemo_sk", "12345");
+    columnValue.put("c_current_addr_sk", "12345");
+    columnValue.put("c_first_shipto_date_sk", "12345");
+    columnValue.put("c_first_sales_date_sk", "12345");
+    columnValue.put("c_salutation", "123456");
+    columnValue.put("c_first_name", "123456789");
+    columnValue.put("c_last_name", "12345678910111213151617");
+    columnValue.put("c_preferred_cust_flag", "1");
+    columnValue.put("c_birth_day", "11");
+    columnValue.put("c_birth_month", "12");
+    columnValue.put("c_birth_year", "2022");
+    columnValue.put("c_birth_country", "china");
+    columnValue.put("c_login", "1921821ks");
+    columnValue.put("c_email_address", "123456789101112131516171212123i19sh1s19");
+    columnValue.put("c_last_review_date_sk", "123456");
+  }
+
   @Override
   public void init() throws DBException {
     if (initialized) {
       System.err.println("Client connection already initialized.");
       return;
     }
+    customInit(); 
     props = getProperties();
     String urls = props.getProperty(CONNECTION_URL, DEFAULT_PROP);
     String driver = props.getProperty(DRIVER_CLASS);
@@ -381,6 +408,10 @@ public class JdbcDBClient extends DB {
   @Override
   public Status read(String tableName, String key, Set<String> fields, Map<String, ByteIterator> result) {
     try {
+      if (!USER_TABLE.isEmpty()) {
+        tableName = USER_TABLE;
+      }
+      key = key.substring(0, KEY_LEN);
       StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
       PreparedStatement readStatement = cachedStatements.get(type);
       if (readStatement == null) {
@@ -474,9 +505,15 @@ public class JdbcDBClient extends DB {
   public Status insert(String tableName, String key, Map<String, ByteIterator> values) {
     int numFields = values.size();
     Map<String, String> map = new HashMap<>(); 
-    map.put(PRIMARY_KEY, key);
-    for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
-      map.put(entry.getKey().toUpperCase(), entry.getValue().toString());
+    map.put(PRIMARY_KEY, key.substring(0, KEY_LEN));
+    if (columnValue.size() > 0) {
+      for (Map.Entry<String, String> entry : columnValue.entrySet()) {
+        map.put(entry.getKey(), entry.getValue());
+      } 
+    } else {
+      for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
+        map.put(entry.getKey().toUpperCase(), entry.getValue().toString());
+      }
     }
     // Create an ObjectMapper
     ObjectMapper mapper = new ObjectMapper();
@@ -541,7 +578,6 @@ public class JdbcDBClient extends DB {
           throw new IOException(
                     String.format("Stream load failed. status: %s load result: %s", statusCode, loadResult));
         }
-
         System.out.println("Get load result: " + loadResult);
       } catch (IOException e) {
         e.printStackTrace();
