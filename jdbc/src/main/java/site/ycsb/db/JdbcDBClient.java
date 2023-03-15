@@ -44,6 +44,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import site.ycsb.db.flavors.DBFlavor;
+import java.util.Random;
 
 /**
  * A class that wraps a JDBC compliant database to allow it to be interfaced
@@ -132,6 +133,16 @@ public class JdbcDBClient extends DB {
    * particular database. Current database flavors are: {default, phoenix} */
   private DBFlavor dbFlavor;
 
+  // custom config
+  private int columnSize = 20;
+  private int columnCount = 20;
+  private boolean vacummTable = false;
+  private boolean runCustomMode = false;
+  private long recordCount = 10000000;
+  private long currentRecord = 0;
+
+  Random random = new Random();
+
   /**
    * Ordered field information for insert and update statements.
    */
@@ -207,27 +218,34 @@ public class JdbcDBClient extends DB {
     return defaultVal;
   }
 
-  public void customInit() {
-    PRIMARY_KEY = "c_customer_id";
-    KEY_LEN = 16;
+  public void customInit() throws DBException {
+    // Use BigInt as primary key
+    PRIMARY_KEY = "customer_key";
     USER_TABLE = "customer";
-    columnValue.put("c_customer_sk", "12345");
-    columnValue.put("c_current_cdemo_sk", "12345");
-    columnValue.put("c_current_hdemo_sk", "12345");
-    columnValue.put("c_current_addr_sk", "12345");
-    columnValue.put("c_first_shipto_date_sk", "12345");
-    columnValue.put("c_first_sales_date_sk", "12345");
-    columnValue.put("c_salutation", "123456");
-    columnValue.put("c_first_name", "123456789");
-    columnValue.put("c_last_name", "12345678910111213151617");
-    columnValue.put("c_preferred_cust_flag", "1");
-    columnValue.put("c_birth_day", "11");
-    columnValue.put("c_birth_month", "12");
-    columnValue.put("c_birth_year", "2022");
-    columnValue.put("c_birth_country", "china");
-    columnValue.put("c_login", "1921821ks");
-    columnValue.put("c_email_address", "123456789101112131516171212123i19sh1s19");
-    columnValue.put("c_last_review_date_sk", "123456");
+
+    // SQL for create table
+    String createTableSql = "CREATE TABLE IF NOT EXISTS " + USER_TABLE + "\n";
+    createTableSql += "(" + PRIMARY_KEY + " BIGINT,\n";
+    for (int i = 0; i < columnCount - 1; ++i) {
+      createTableSql += USER_TABLE + "_value_" + i + " STRING,\n";
+  }
+    createTableSql += USER_TABLE + "_value_" + columnCount + " STRING)\n";
+    createTableSql += "UNIQUE KEY(" + PRIMARY_KEY + ")\n";
+    createTableSql += "DISTRIBUTED BY HASH(" + PRIMARY_KEY + ")\n";
+    createTableSql += "PROPERTIES(\"replication_num\"=\"1\",\"store_row_column\"=\"true\", \"enable_unique_key_merge_on_write\"=\"true\")\n";
+    System.out.println("create table sql :" + createTableSql);
+
+    try {
+      Connection conn = getShardConnectionByKey("connection");
+      Statement createTableStmt = conn.createStatement(); 
+      createTableStmt.execute(createTableSql); 
+      if (vacummTable) {
+        Statement vacTableStmt = conn.createStatement(); 
+        vacTableStmt.execute("TRUNCATE TABLE " + USER_TABLE);
+      }
+    } catch (SQLException e) {
+      throw new DBException("error when create table: " + e);
+    }
   }
 
   @Override
@@ -236,7 +254,6 @@ public class JdbcDBClient extends DB {
       System.err.println("Client connection already initialized.");
       return;
     }
-    customInit(); 
     props = getProperties();
     String urls = props.getProperty(CONNECTION_URL, DEFAULT_PROP);
     String driver = props.getProperty(DRIVER_CLASS);
@@ -249,6 +266,22 @@ public class JdbcDBClient extends DB {
 
     this.autoCommit = getBoolProperty(props, JDBC_AUTO_COMMIT, true);
     this.batchUpdates = getBoolProperty(props, JDBC_BATCH_UPDATES, false);
+
+    // custom configs
+    this.runCustomMode = getBoolProperty(props, "db.runCustomMode", false);
+    this.columnCount = getIntProperty(props, "db.columnCount");
+    if (this.columnCount <= 0) {
+      this.columnCount = 20;
+    }
+    this.columnSize = getIntProperty(props, "db.columnSize");
+    if (this.columnSize <= 0) {
+      this.columnSize = 20;
+    }
+    this.vacummTable = getBoolProperty(props, "db.vacummTable", false);
+    this.recordCount = getIntProperty(props, "db.recordCount");
+    if (this.recordCount <= 0) {
+      this.recordCount = 10000000;
+    }
 
     try {
 //  The SQL Syntax for Scan depends on the DB engine
@@ -307,6 +340,10 @@ public class JdbcDBClient extends DB {
     } catch (NumberFormatException e) {
       System.err.println("Invalid value for fieldcount property. " + e);
       throw new DBException(e);
+    }
+
+    if (runCustomMode) {
+      customInit(); 
     }
 
     initialized = true;
@@ -411,13 +448,26 @@ public class JdbcDBClient extends DB {
       if (!USER_TABLE.isEmpty()) {
         tableName = USER_TABLE;
       }
-      key = key.substring(0, KEY_LEN);
-      StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
-      PreparedStatement readStatement = cachedStatements.get(type);
-      if (readStatement == null) {
-        readStatement = createAndCacheReadStatement(type, key);
+      PreparedStatement readStatement = null;
+      if (runCustomMode) {
+        long rankey = random.nextInt((int) recordCount);
+        key = String.valueOf(rankey);
+        StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key)); 
+        readStatement = cachedStatements.get(type);
+        if (readStatement == null) {
+          readStatement = createAndCacheReadStatement(type, key);
+        }
+        readStatement.setLong(1, rankey);
+      } else {
+        key = key.substring(0, KEY_LEN);
+        StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
+        readStatement = cachedStatements.get(type);
+        if (readStatement == null) {
+          readStatement = createAndCacheReadStatement(type, key);
+        }
+        readStatement.setString(1, key);
       }
-      readStatement.setString(1, key);
+      
       ResultSet resultSet = readStatement.executeQuery();
       if (!resultSet.next()) {
         resultSet.close();
@@ -501,20 +551,43 @@ public class JdbcDBClient extends DB {
     }
   }
 
+  private String genRandomString(int length) {
+    // set of characters to use in generating the string
+    String characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        
+    StringBuilder sb = new StringBuilder(length);
+    // generate random characters and append to string builder
+    for (int i = 0; i < length - 1; i++) {
+      int randomIndex = random.nextInt(characters.length());
+      char randomChar = characters.charAt(randomIndex);
+      sb.append(randomChar);
+    }
+        
+    return sb.toString();  
+  }
+
   @Override
   public Status insert(String tableName, String key, Map<String, ByteIterator> values) {
     int numFields = values.size();
     Map<String, String> map = new HashMap<>(); 
-    map.put(PRIMARY_KEY, key.substring(0, KEY_LEN));
-    if (columnValue.size() > 0) {
-      for (Map.Entry<String, String> entry : columnValue.entrySet()) {
-        map.put(entry.getKey(), entry.getValue());
-      } 
+    if (runCustomMode) {
+      // Generate random primary key and value to json streamLoad
+      if (currentRecord > recordCount) {
+        return Status.OK;
+      }
+      // key
+      map.put(PRIMARY_KEY, String.valueOf(currentRecord++));
+      // value
+      for (int i = 0; i < columnCount; ++i) {
+        map.put(USER_TABLE + "_value_" + i, genRandomString(columnSize));
+      }
     } else {
+      map.put(PRIMARY_KEY, key.substring(0, KEY_LEN));
       for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
         map.put(entry.getKey().toUpperCase(), entry.getValue().toString());
       }
     }
+    
     // Create an ObjectMapper
     ObjectMapper mapper = new ObjectMapper();
     String json = null;
