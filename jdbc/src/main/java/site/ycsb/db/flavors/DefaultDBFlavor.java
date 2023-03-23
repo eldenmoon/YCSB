@@ -39,7 +39,7 @@ public class DefaultDBFlavor extends DBFlavor {
     for (int i = 0; i < insertType.getNumFields(); i++) {
       insert.append(",?");
     }
-    insert.append(")");
+    insert.append(") ON CONFLICT (" + JdbcDBClient.PRIMARY_KEY + ") DO NOTHING");
     return insert.toString();
   }
 

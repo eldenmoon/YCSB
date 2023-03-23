@@ -28,6 +28,7 @@ import java.sql.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.codec.binary.Base64;
 import org.apache.http.HttpHeaders;
@@ -139,7 +140,7 @@ public class JdbcDBClient extends DB {
   private boolean vacummTable = false;
   private boolean runCustomMode = true;
   private long recordCount = 10000000;
-  private long currentRecord = 0;
+  private static AtomicInteger currentRecord = new AtomicInteger(0);
 
   Random random = new Random();
 
@@ -574,19 +575,21 @@ public class JdbcDBClient extends DB {
       PreparedStatement insertStatement = null;
       if (isCustomTable) {
         // Generate random primary key and value
-        if (currentRecord > recordCount) {
+        if (currentRecord.get() > recordCount) {
           return Status.OK;
         }
         int numFields = columnCount;
         // List<String> fields = new ArrayList<String>();
         StatementType type = new StatementType(StatementType.Type.INSERT, tableName,
-            numFields, "", getShardIndexByKey(String.valueOf(currentRecord)));
+            numFields, "", getShardIndexByKey(String.valueOf(currentRecord.get())));
         insertStatement = cachedStatements.get(type);
         if (insertStatement == null) {
-          insertStatement = createAndCacheInsertStatement(type, String.valueOf(currentRecord));
+          insertStatement = createAndCacheInsertStatement(type, String.valueOf(currentRecord.get()));
         } 
         // key
-        insertStatement.setInt(1, (int) currentRecord++);
+        synchronized (this) {
+          insertStatement.setInt(1, (int) currentRecord.incrementAndGet());
+        }
         int index = 2;
         for (int i = 0; i < columnCount; ++i) {
           insertStatement.setString(i+index, genRandomString(columnSize));
@@ -668,11 +671,11 @@ public class JdbcDBClient extends DB {
     Map<String, String> map = new HashMap<>(); 
     if (runCustomMode) {
       // Generate random primary key and value to json streamLoad
-      if (currentRecord > recordCount) {
+      if (currentRecord.get() > recordCount) {
         return Status.OK;
       }
       // key
-      map.put(PRIMARY_KEY, String.valueOf(currentRecord++));
+      map.put(PRIMARY_KEY, String.valueOf(currentRecord.getAndIncrement()));
       // value
       for (int i = 0; i < columnCount; ++i) {
         map.put(USER_TABLE + "_value_" + i, genRandomString(columnSize));
