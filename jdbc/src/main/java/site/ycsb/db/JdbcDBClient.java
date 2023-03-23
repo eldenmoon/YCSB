@@ -137,7 +137,7 @@ public class JdbcDBClient extends DB {
   private int columnSize = 20;
   private int columnCount = 20;
   private boolean vacummTable = false;
-  private boolean runCustomMode = false;
+  private boolean runCustomMode = true;
   private long recordCount = 10000000;
   private long currentRecord = 0;
 
@@ -222,13 +222,12 @@ public class JdbcDBClient extends DB {
     // Use BigInt as primary key
     PRIMARY_KEY = "customer_key";
     USER_TABLE = "customer";
-
     // SQL for create table
     String createTableSql = "CREATE TABLE IF NOT EXISTS " + USER_TABLE + "\n";
     createTableSql += "(" + PRIMARY_KEY + " BIGINT,\n";
     for (int i = 0; i < columnCount - 1; ++i) {
       createTableSql += USER_TABLE + "_value_" + i + " STRING,\n";
-  }
+    }
     createTableSql += USER_TABLE + "_value_" + columnCount + " STRING)\n";
     createTableSql += "UNIQUE KEY(" + PRIMARY_KEY + ")\n";
     createTableSql += "DISTRIBUTED BY HASH(" + PRIMARY_KEY + ")\n";
@@ -257,6 +256,9 @@ public class JdbcDBClient extends DB {
     props = getProperties();
     String urls = props.getProperty(CONNECTION_URL, DEFAULT_PROP);
     String driver = props.getProperty(DRIVER_CLASS);
+    PRIMARY_KEY = props.getProperty("db.keyName", PRIMARY_KEY);
+    USER_TABLE = props.getProperty("db.tableName", USER_TABLE);
+
     user = props.getProperty(CONNECTION_USER, DEFAULT_PROP);
     passwd = props.getProperty(CONNECTION_PASSWD, DEFAULT_PROP);
     loadURL = props.getProperty(DORIS_LOAD_URL, "");
@@ -449,7 +451,7 @@ public class JdbcDBClient extends DB {
         tableName = USER_TABLE;
       }
       PreparedStatement readStatement = null;
-      if (runCustomMode) {
+      if (runCustomMode || !USER_TABLE.isEmpty()) {
         long rankey = random.nextInt((int) recordCount);
         key = String.valueOf(rankey);
         StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key)); 
@@ -566,6 +568,100 @@ public class JdbcDBClient extends DB {
     return sb.toString();  
   }
 
+  private Status insertWithStatement(String tableName, String key,
+                  OrderedFieldInfo fieldInfo, boolean isCustomTable) {
+    try {
+      PreparedStatement insertStatement = null;
+      if (isCustomTable) {
+        // Generate random primary key and value
+        if (currentRecord > recordCount) {
+          return Status.OK;
+        }
+        int numFields = columnCount;
+        // List<String> fields = new ArrayList<String>();
+        StatementType type = new StatementType(StatementType.Type.INSERT, tableName,
+            numFields, "", getShardIndexByKey(String.valueOf(currentRecord)));
+        insertStatement = cachedStatements.get(type);
+        if (insertStatement == null) {
+          insertStatement = createAndCacheInsertStatement(type, String.valueOf(currentRecord));
+        } 
+        // key
+        insertStatement.setInt(1, (int) currentRecord++);
+        int index = 2;
+        for (int i = 0; i < columnCount; ++i) {
+          insertStatement.setString(i+index, genRandomString(columnSize));
+        }
+      } else {
+        int numFields = fieldInfo.getFieldValues().size();
+        StatementType type = new StatementType(StatementType.Type.INSERT, tableName,
+            numFields, fieldInfo.getFieldKeys(), getShardIndexByKey(key));
+        insertStatement = cachedStatements.get(type);
+        if (insertStatement == null) {
+          insertStatement = createAndCacheInsertStatement(type, key);
+        }
+        insertStatement.setString(1, key);
+        int index = 2;
+        for (String value: fieldInfo.getFieldValues()) {
+          insertStatement.setString(index++, value);
+        }
+      }
+      // Using the batch insert API
+      if (batchUpdates) {
+        insertStatement.addBatch();
+        // Check for a sane batch size
+        if (batchSize > 0) {
+          // Commit the batch after it grows beyond the configured size
+          if (++numRowsInBatch % batchSize == 0) {
+            int[] results = insertStatement.executeBatch();
+            for (int r : results) {
+              // Acceptable values are 1 and SUCCESS_NO_INFO (-2) from reWriteBatchedInserts=true
+              if (r != 1 && r != -2) { 
+                return Status.ERROR;
+              }
+            }
+            // If autoCommit is off, make sure we commit the batch
+            if (!autoCommit) {
+              getShardConnectionByKey(key).commit();
+            }
+            return Status.OK;
+          } // else, the default value of -1 or a nonsense. Treat it as an infinitely large batch.
+        } // else, we let the batch accumulate
+        // Added element to the batch, potentially committing the batch too.
+        return Status.BATCHED_OK;
+      } else {
+        // Normal update
+        int result = insertStatement.executeUpdate();
+        // If we are not autoCommit, we might have to commit now
+        if (!autoCommit) {
+          // Let updates be batcher locally
+          if (batchSize > 0) {
+            if (++numRowsInBatch % batchSize == 0) {
+              // Send the batch of updates
+              getShardConnectionByKey(key).commit();
+            }
+            // uhh
+            return Status.OK;
+          } else {
+            // Commit each update
+            getShardConnectionByKey(key).commit();
+          }
+        }
+        if (result == 1) {
+          return Status.OK;
+        }
+      }
+      return Status.UNEXPECTED_STATE;
+    } catch (SQLException e) {
+      System.err.println("Error in processing insert to table: " + tableName + e);
+      return Status.ERROR;
+    }
+  }
+  
+  private Status insertWithStatement(String tableName,
+                  String key, Map<String, ByteIterator> values) {
+    return insertWithStatement(tableName, key, getFieldInfo(values), false);
+  }
+
   @Override
   public Status insert(String tableName, String key, Map<String, ByteIterator> values) {
     int numFields = values.size();
@@ -581,23 +677,29 @@ public class JdbcDBClient extends DB {
       for (int i = 0; i < columnCount; ++i) {
         map.put(USER_TABLE + "_value_" + i, genRandomString(columnSize));
       }
-    } else {
-      map.put(PRIMARY_KEY, key.substring(0, KEY_LEN));
-      for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
-        map.put(entry.getKey().toUpperCase(), entry.getValue().toString());
+      // Create an ObjectMapper
+      ObjectMapper mapper = new ObjectMapper();
+      String json = null;
+      try {
+        // Convert the map to a JSON string
+        json = mapper.writeValueAsString(map);
+      } catch (JsonProcessingException e) {
+        e.printStackTrace();
       }
+      return dorisStreamLoad(json);
+    } else {
+      // map.put(PRIMARY_KEY, key.substring(0, KEY_LEN));
+      // for (Map.Entry<String, ByteIterator> entry : values.entrySet()) {
+      //   map.put(entry.getKey().toUpperCase(), entry.getValue().toString());
+      // }
+      if (!USER_TABLE.isEmpty()) {
+        // USER table
+        tableName = USER_TABLE;
+        return insertWithStatement(tableName, null, null, true);
+      }
+      // YCSB table
+      return insertWithStatement(tableName, key, values);
     }
-    
-    // Create an ObjectMapper
-    ObjectMapper mapper = new ObjectMapper();
-    String json = null;
-    try {
-      // Convert the map to a JSON string
-      json = mapper.writeValueAsString(map);
-    } catch (JsonProcessingException e) {
-      e.printStackTrace();
-    }
-    return dorisStreamLoad(json);
   }
 
   private String basicAuthHeader(String username, String password) {
