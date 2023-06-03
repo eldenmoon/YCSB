@@ -588,7 +588,7 @@ public class JdbcDBClient extends DB {
         } 
         // key
         synchronized (this) {
-          insertStatement.setInt(1, (int) currentRecord.incrementAndGet());
+          insertStatement.setInt(1, (int) currentRecord.getAndIncrement());
         }
         int index = 2;
         for (int i = 0; i < columnCount; ++i) {
@@ -712,19 +712,16 @@ public class JdbcDBClient extends DB {
   }
 
   public Status dorisStreamLoad(String valueJson) {
-    String buff;
-    synchronized (this) {
-      curBatchSize += 1;
-      if (curBatchSize <= batchSize) {
-        bufferString.append(valueJson);
-        bufferString.append("\n");
-        return Status.OK;
-      } else {
-        buff = bufferString.toString();
-        curBatchSize = 0;
-        bufferString = new StringBuilder();
-      }
+    bufferString.append(valueJson);
+    bufferString.append("\n");
+    if (++numRowsInBatch % batchSize != 0) {
+      // uhh
+      return Status.OK;
     }
+    // Send the batch of updates
+    String buff;
+    buff = bufferString.toString();
+    bufferString = new StringBuilder();
     HttpClientBuilder httpClientBuilder = HttpClients
             .custom()
             .setRedirectStrategy(new DefaultRedirectStrategy() {
