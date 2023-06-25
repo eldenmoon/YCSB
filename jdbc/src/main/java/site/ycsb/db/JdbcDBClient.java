@@ -738,6 +738,7 @@ public class JdbcDBClient extends DB {
       // put.setHeader(HttpHeaders.AUTHORIZATION, basicAuthHeader(user, passwd));
       put.setHeader("read_json_by_line", "true");
       put.setHeader("format", "json");
+      put.setHeader("expect", "100-continue");
       put.setHeader(HttpHeaders.AUTHORIZATION, basicAuthHeader(user, passwd));
       StringEntity buffEntity = new StringEntity(buff);
       // StringEntity can also be used here to transfer arbitrary data.
