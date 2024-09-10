@@ -45,7 +45,6 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import site.ycsb.db.flavors.DBFlavor;
-import java.util.Random;
 
 /**
  * A class that wraps a JDBC compliant database to allow it to be interfaced
@@ -139,6 +138,8 @@ public class JdbcDBClient extends DB {
   private int columnCount = 20;
   private boolean vacummTable = false;
   private boolean runCustomMode = true;
+  private boolean isInQuery = false;
+  private int inListSize = 10;
   private long recordCount = 10000000;
   private static AtomicInteger currentRecord = new AtomicInteger(0);
 
@@ -272,6 +273,8 @@ public class JdbcDBClient extends DB {
 
     // custom configs
     this.runCustomMode = getBoolProperty(props, "db.runCustomMode", false);
+    this.isInQuery = getBoolProperty(props, "db.isInQuery", false);
+    this.inListSize = getIntProperty(props, "db.inListSize");
     this.columnCount = getIntProperty(props, "db.columnCount");
     if (this.columnCount <= 0) {
       this.columnCount = 20;
@@ -398,6 +401,18 @@ public class JdbcDBClient extends DB {
     return stmt;
   }
 
+  private PreparedStatement createAndCacheBatchReadStatement(StatementType readType, String key, int inBatchSize)
+    throws SQLException {
+    String read = dbFlavor.createBatchReadStatement(readType, key, inBatchSize);
+    // todo: not sure if this is correct
+    PreparedStatement readStatement = getShardConnectionByKey(key).prepareStatement(read);
+    PreparedStatement stmt = cachedStatements.putIfAbsent(readType, readStatement);
+    if (stmt == null) {
+      return readStatement;
+    }
+    return stmt;
+  }
+
   private PreparedStatement createAndCacheExecuteStatement(StatementType readType, String key)
       throws SQLException {
     String read = dbFlavor.createExecuteStatement();
@@ -453,14 +468,35 @@ public class JdbcDBClient extends DB {
       }
       PreparedStatement readStatement = null;
       if (runCustomMode || !USER_TABLE.isEmpty()) {
-        long rankey = random.nextInt((int) recordCount);
-        key = String.valueOf(rankey);
-        StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key)); 
-        readStatement = cachedStatements.get(type);
-        if (readStatement == null) {
-          readStatement = createAndCacheReadStatement(type, key);
+        long rankey;
+        String newKey = "";
+        if (isInQuery) {
+          List<Long> newKeysLong = new ArrayList<Long>();
+          List<String> newKeysString = new ArrayList<String>();
+          for (int i = 0; i < inListSize; ++i) {
+            rankey = random.nextInt((int) recordCount);
+            newKey = String.valueOf(rankey);
+            newKeysLong.add(rankey);
+            newKeysString.add(newKey);
+          }
+          StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(newKeysString.get(0))); 
+          readStatement = cachedStatements.get(type);
+          if (readStatement == null) {
+            readStatement = createAndCacheBatchReadStatement(type, newKeysString.get(0), inListSize);
+          }
+          for (int i = 0; i < inListSize; ++i) {
+            readStatement.setLong(i + 1, newKeysLong.get(i));
+          }
+        } else {
+          rankey = random.nextInt((int) recordCount);
+          newKey = String.valueOf(rankey);
+          StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(newKey)); 
+          readStatement = cachedStatements.get(type);
+          if (readStatement == null) {
+            readStatement = createAndCacheReadStatement(type, newKey);
+          }
+          readStatement.setLong(1, rankey);
         }
-        readStatement.setLong(1, rankey);
       } else {
         key = key.substring(0, KEY_LEN);
         StatementType type = new StatementType(StatementType.Type.READ, tableName, 1, "", getShardIndexByKey(key));
@@ -470,7 +506,6 @@ public class JdbcDBClient extends DB {
         }
         readStatement.setString(1, key);
       }
-      
       ResultSet resultSet = readStatement.executeQuery();
       if (!resultSet.next()) {
         resultSet.close();

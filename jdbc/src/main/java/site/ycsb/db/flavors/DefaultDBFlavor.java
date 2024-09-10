@@ -74,6 +74,23 @@ public class DefaultDBFlavor extends DBFlavor {
   }
 
   @Override
+  public String createBatchReadStatement(StatementType readType, String key, int batchSize) {
+    StringBuilder read = new StringBuilder("SELECT * FROM ");
+    read.append(readType.getTableName());
+    read.append(" WHERE ");
+    read.append(JdbcDBClient.PRIMARY_KEY);
+    read.append(" IN (");
+    for (int i = 0; i < batchSize; i++) {
+      read.append("?");
+      if (i < batchSize - 1) {
+        read.append(",");
+      }
+    }
+    read.append(")");
+    return read.toString();
+  }
+
+  @Override
   public String createDeleteStatement(StatementType deleteType, String key) {
     StringBuilder delete = new StringBuilder("DELETE FROM ");
     delete.append(deleteType.getTableName());
