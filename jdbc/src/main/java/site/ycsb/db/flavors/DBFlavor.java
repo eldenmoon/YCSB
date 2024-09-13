@@ -53,6 +53,11 @@ public abstract class DBFlavor {
   public abstract String createReadStatement(StatementType readType, String key);
 
   /**
+   * Create and return a SQL statement for reading data.
+   */
+  public abstract String createBatchReadStatement(StatementType readType, String key, int inBatchSize);
+
+  /**
    * Create and return a SQL statement for prepare stmt.
    */
   public abstract String createPrepareStatement(String tableName, String key);
