@@ -227,7 +227,7 @@ public class JdbcDBClient extends DB {
     // SQL for create table
     String createTableSql = "CREATE TABLE IF NOT EXISTS " + USER_TABLE + "\n";
     createTableSql += "(" + PRIMARY_KEY + " BIGINT,\n";
-    for (int i = 0; i < columnCount - 1; ++i) {
+    for (int i = 1; i < columnCount; ++i) {
       createTableSql += USER_TABLE + "_value_" + i + " STRING,\n";
     }
     createTableSql += USER_TABLE + "_value_" + columnCount + " STRING)\n";
@@ -595,7 +595,7 @@ public class JdbcDBClient extends DB {
         
     StringBuilder sb = new StringBuilder(length);
     // generate random characters and append to string builder
-    for (int i = 0; i < length - 1; i++) {
+    for (int i = 0; i < length; i++) {
       int randomIndex = random.nextInt(characters.length());
       char randomChar = characters.charAt(randomIndex);
       sb.append(randomChar);
@@ -712,7 +712,7 @@ public class JdbcDBClient extends DB {
       // key
       map.put(PRIMARY_KEY, String.valueOf(currentRecord.getAndIncrement()));
       // value
-      for (int i = 0; i < columnCount; ++i) {
+      for (int i = 1; i <= columnCount; ++i) {
         map.put(USER_TABLE + "_value_" + i, genRandomString(columnSize));
       }
       // Create an ObjectMapper
